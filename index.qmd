@@ -155,7 +155,6 @@ lb2023_a <- lb2023_a %>%
       .fns  = ~ haven::as_factor(.x, levels = "labels")
     )
   )
-levels(lb2023_a$p16st) # Verificar si la variable de ponderación es numérica
 ```
 
 
@@ -227,13 +226,278 @@ lb2023_pe <- lb2023_a %>% filter(idenpa == " Peru")
 ```
 
 
-# Analisis descriptivo
+# Analisis de valores perdidos
 
+## Estadísticos de resumen 
+
+En esta sección, se analiza univariadamente cada variable del dataset. Comprobamos que las variables categóricas tengan los niveles correctos y que las variables numéricas estén en el formato adecuado. 
+Se identifican los valores perdidos y se proporciona un resumen de las variables.
 
 ```{r}
 library(skimr)
-skim(lb2023_pe) %>% as_tibble()
+skimr :: skim(lb2023_pe) %>% as_tibble()
+```
+
+```{r}
+library(naniar)
+naniar :: vis_miss(lb2023_pe)
+```
+# Imputación rapida
+```{r, warning=FALSE, message=FALSE}
+library(mice)
+# 1. Identificar columnas con NA
+cols_na <- names(which(colSums(is.na(lb2023_pe)) > 0))
+```
+
+Clasificamos las variables según su tipo para aplicar métodos de imputación adecuados. Las variables numéricas, ordinales y categóricas se manejan de manera diferente en el proceso de imputación.
+
+```{r}
+# 2. Clasificar variables
+numeric_vars    <- cols_na[sapply(lb2023_pe[cols_na], is.numeric)]
+ordinal_vars    <- cols_na[sapply(lb2023_pe[cols_na], is.ordered)]
+categorical_vars <- cols_na[sapply(lb2023_pe[cols_na], function(x) is.factor(x) && !is.ordered(x))]
+```
+
+Le decimos a R que en meth_vec vamos a definir los métodos de imputación para cada tipo de variable. Utilizamos `make.method` del paquete `mice` para crear un vector de métodos de imputación. Luego, asignamos el método adecuado a cada tipo de variable.
+
+```{r}
+# 3. Definir métodos de imputación para MICE
+meth_vec <- make.method(lb2023_pe[cols_na])
+
+meth_vec[numeric_vars]    <- "pmm"     # Predictive Mean Matching para numéricas
+meth_vec[ordinal_vars]    <- "polr"    # Proportional Odds Logistic Regression para ordinales
+meth_vec[categorical_vars] <- "polyreg" # Regresión polinómica para nominales
+```
+
+Ejecutamos el proceso de imputación multivariada utilizando la función `mice`. Especificamos el número de imputaciones (`m = 10`) y un valor de semilla para la reproducibilidad (`seed = 123`). La opción `printFlag = FALSE` suprime la salida de progreso.
+
+```{r}
+# 4. Ejecutar imputación multivariada
+imp_full <- mice(lb2023_pe[cols_na], method = meth_vec, m = 10, seed = 123, printFlag = FALSE)
+
+# 5. Completar base con la primera imputación (puede cambiarse a pool)
+lb2023_pe_imp <- lb2023_pe
+lb2023_pe_imp[cols_na] <- complete(imp_full, 1)
+
+# 6. Resumen rápido de columnas imputadas
+tibble(
+  tipo        = c("Numéricas", "Ordinales", "Nominales"),
+  n_variables = c(length(numeric_vars), length(ordinal_vars), length(categorical_vars))
+)
+
+```
+
+```{r}
+lb2023_pe <- lb2023_pe_imp
+skimr :: skim(lb2023_pe) %>% as_tibble()
+```
+# Modelamiento
+
+## Las regresiones logísticas ordinales
+
+Las regresiones logísticas ordinales resultan idóneas cuando la variable de interés toma valores ordenados (por ejemplo niveles de satisfacción o confianza) sin que la distancia entre ellos sea necesariamente constante. En tu caso, la confianza en el Congreso (p13std) se modela en función de un conjunto de predictores 𝑥, capturando el carácter ordinal de las categorías. Matemáticamente, para una variable 𝑌con 𝐾 niveles (1,2,…,𝐾) el modelo de probabilidades acumuladas se expresa como:
+
+Para cada \(k=1,\dots,K-1\):
+
+$$
+\Pr(Y \le k \mid x) = \frac{1}{1 + \exp\bigl(-(\alpha_k - x^\top\beta)\bigr)}.
+$$
+
+Equivalentemente,
+
+$$
+\log\frac{\Pr(Y \le k \mid x)}{\Pr(Y > k \mid x)}
+=\alpha_k - x^\top\beta.
+$$
+
+
+## Especificacion de modelos
+
+```{r, message=FALSE, warning=FALSE}
+
+library(MASS)   # polr()
+library(broom)  # tidy / glance
+library(purrr)  # map / imap
+
+# Modelo 1: Sólo predictores principales
+mod_ord1 <- polr(
+  p13std ~ p18sta + p18sti + p18ne + p54na + p11stgbsa + p11stgbsb,
+  data    = lb2023_pe,
+  weights = wt,
+  Hess    = TRUE
+)
+
+# Modelo 2: + controles sociodemográficos
+mod_ord2 <- polr(
+  p13std ~ p18sta + p18sti + p18ne + p54na + p11stgbsa + p11stgbsb + edad + sexo + s2,
+  data    = lb2023_pe,
+  weights = wt,
+  Hess    = TRUE
+)
+
+# Modelo 3: + variables político-ideológicas y de contexto
+mod_ord3 <- polr(p13std ~ p18sta + p18sti + p18ne + p54na + p11stgbsa + p11stgbsb + 
+                   edad + sexo + s2 + 
+                   p16st + p17st,
+  data    = lb2023_pe,
+  weights = wt,
+  Hess    = TRUE
+)
+
 ```
 
 
+```{r}
+tab_ord1 <- tidy(mod_ord1, conf.int = TRUE) %>%
+  mutate(
+    OR       = exp(estimate),      # convierte log-odds en odds ratio
+    p.value  = 2 * (1 - pnorm(abs(statistic))),
+    signif   = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ ""
+    )
+  ) %>% dplyr::  select(term, estimate, OR, std.error, statistic, p.value, signif, conf.low, conf.high)
+
+tab_ord2 <- tidy(mod_ord2, conf.int = TRUE) %>%
+  mutate(
+    OR       = exp(estimate),      # convierte log-odds en odds ratio
+    p.value  = 2 * (1 - pnorm(abs(statistic))),
+    signif   = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ ""
+    )
+  ) %>% dplyr ::  select(term, estimate, OR, std.error, statistic, p.value, signif, conf.low, conf.high)
+
+tab_ord3 <- tidy(mod_ord3, conf.int = TRUE) %>%
+  mutate(
+    OR       = exp(estimate),      # convierte log-odds en odds ratio
+    p.value  = 2 * (1 - pnorm(abs(statistic))),
+    signif   = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ ""
+    )
+  ) %>% dplyr:: select(term, estimate, OR, std.error, statistic, p.value, signif, conf.low, conf.high)
+
+#tab_ordx %>% as_tibble()
+```
+
+
+`
+```{r}
+# Mostrar tabla con gt (Quarto friendly)
+library(gt)
+tab_ord1 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Tabla de resultados mod_ord1**"),
+    subtitle = md("Coeficientes (log-odds), OR, p-values y significancia")
+  ) %>%
+  fmt_number(
+    columns = vars(estimate, OR, std.error, statistic, p.value, conf.low, conf.high),
+    decimals = 2
+  ) %>%
+  cols_label(
+    term       = "Predictor",
+    estimate   = "Coef",
+    OR         = "OR",
+    std.error  = "SE",
+    statistic  = "z",
+    p.value    = "p",
+    signif     = "Signif",
+    conf.low   = "IC 2.5%",
+    conf.high  = "IC 97.5%"
+  ) %>%
+  tab_source_note(md("Signif.: * p<0.05; ** p<0.01; *** p<0.001"))
+
+```
+
+
+```{r}
+# Mostrar tabla con gt (Quarto friendly)
+library(gt)
+tab_ord2 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Tabla de resultados mod_ord2**"),
+    subtitle = md("Coeficientes (log-odds), OR, p-values y significancia")
+  ) %>%
+  fmt_number(
+    columns = vars(estimate, OR, std.error, statistic, p.value, conf.low, conf.high),
+    decimals = 2
+  ) %>%
+  cols_label(
+    term       = "Predictor",
+    estimate   = "Coef",
+    OR         = "OR",
+    std.error  = "SE",
+    statistic  = "z",
+    p.value    = "p",
+    signif     = "Signif",
+    conf.low   = "IC 2.5%",
+    conf.high  = "IC 97.5%"
+  ) %>%
+  tab_source_note(md("Signif.: * p<0.05; ** p<0.01; *** p<0.001"))
+
+```
+
+
+```{r}
+# Mostrar tabla con gt (Quarto friendly)
+library(gt)
+tab_ord3 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Tabla de resultados mod_ord1**"),
+    subtitle = md("Coeficientes (log-odds), OR, p-values y significancia")
+  ) %>%
+  fmt_number(
+    columns = vars(estimate, OR, std.error, statistic, p.value, conf.low, conf.high),
+    decimals = 2
+  ) %>%
+  cols_label(
+    term       = "Predictor",
+    estimate   = "Coef",
+    OR         = "OR",
+    std.error  = "SE",
+    statistic  = "z",
+    p.value    = "p",
+    signif     = "Signif",
+    conf.low   = "IC 2.5%",
+    conf.high  = "IC 97.5%"
+  ) %>%
+  tab_source_note(md("Signif.: * p<0.05; ** p<0.01; *** p<0.001"))
+
+```
+
+
+Si deseas ver las tablas en formato apa, puedes usar el siguiente codigo
+```{r}
+library(modelsummary)
+
+# Construir lista de modelos con etiquetas
+models_list <- list(
+  "Modelo 1" = mod_ord1,
+  "Modelo 2" = mod_ord2,
+  "Modelo 3" = mod_ord3
+)
+
+# Generar tabla APA
+modelsummary(
+  models_list,
+  output = "kableExtra",    # Salida en HTML para Quarto
+  stars  = TRUE,             # Estrellas de significancia
+  fmt    = 2,                # Dos decimales
+  style  = "apa",          # Formato APA
+  coef_omit = "(Intercept)", # Omitir interceptos si se desea
+  title  = "Tabla APA de modelos de regresión ordinal"
+) %>%
+  kableExtra::kable_styling(full_width = FALSE)
+```
+```
 
