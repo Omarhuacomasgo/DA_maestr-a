@@ -1,25 +1,76 @@
 ---
-title: "omar"
-format: html
+title: "Análisis de datos – tesis de maestría"
+author: "Omar Huaco"
+date: last-modified     # se actualiza al compilar
+lang: es
+
+# Valores globales para TODOS los chunks
+execute:
+  warning: false        # suprime advertencias
+  message: false        # suprime mensajes
+  echo: true            # (opcional) muestra el código
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-overflow: scroll
+    df-print: paged
+    highlight-style: github
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
 
 ```{r}
-1 + 1
+#| label: setup
+#| include: false
+
+knitr::opts_knit$set(
+  echo = TRUE,               # muestra el código
+  warning = FALSE,           # no muestra advertencias
+  message = FALSE,           # no muestra mensajes
+  fig.width = 8,            # ancho de las figuras
+  fig.height = 5,           # alto de las figuras
+  fig.align = "center",    # alinea las figuras al centro
+  dpi = 300)           # resolución de las figuras
+  
 ```
 
-You can add options to executable code like this 
 
-```{r}
-#| echo: false
-2 * 2
+# Resumen 
+
+Este informe reconstruye el análisis de datos ejecutado para el proyecto de tesis
+
+```{r, message = FALSE, results= 'hide'}
+
+lapply(c("tidyverse", "readxl", "writexl", "modelsummary", "haven", "janitor", "labelled"), library, 
+       character.only = TRUE)
+
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+# Carga de datos y data wrangling
+
+
+```{r, message = FALSE, REsults = 'hide'}
+#| label: load-data
+#| include: true
+
+lb2023 <- haven :: read_sav("E:\\Bases de datos\\latinobarometro_datasets\\lb2023.sav")
+lb2023 <- lb2023 %>%  mutate(across(where(is.character), trimws)) %>% rename_with(~ gsub("[._\\s]+", "", tolower(.x)))
+
+
+#exploración de los metadatos
+lb2023_metadata <- look_for(lb2023) %>% as_tibble()
+
+# 2. Exporta a Excel con writexl
+writexl::write_xlsx(x = lb2023, path = file.path("Exports", "Tables", "lb2023.xlsx"))
+```
+
+
+
+
+
+
+
