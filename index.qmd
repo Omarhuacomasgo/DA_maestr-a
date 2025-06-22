@@ -1,13 +1,9 @@
 ---
-title: "Tesis de maestría"
-authot: "Nombre del autor"
-format: 
-   html: 
-      toc: true
-      code-fold: show
+title: "omar"
+format: html
 ---
 
-## Encabezado
+## Quarto
 
 Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
 
