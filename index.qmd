@@ -3,13 +3,10 @@ title: "Análisis de datos – tesis de maestría"
 author: "Omar Huaco"
 date: last-modified     # se actualiza al compilar
 lang: es
-
-# Valores globales para TODOS los chunks
 execute:
   warning: false        # suprime advertencias
   message: false        # suprime mensajes
   echo: true            # (opcional) muestra el código
-
 format:
   html:
     theme: cosmo
@@ -45,32 +42,198 @@ Este informe reconstruye el análisis de datos ejecutado para el proyecto de tes
 
 ```{r, message = FALSE, results= 'hide'}
 
-lapply(c("tidyverse", "readxl", "writexl", "modelsummary", "haven", "janitor", "labelled"), library, 
+lapply(c("tidyverse", "readxl", "writexl", "modelsummary", "haven", "janitor", "labelled", "forcats"), library, 
        character.only = TRUE)
 
 ```
 
 # Carga de datos y data wrangling
 
+En esta sección se carga el conjunto de datos del Latinobarómetro 2023 y se realiza un preprocesamiento básico para su análisis.
 
-```{r, message = FALSE, REsults = 'hide'}
+```{r, message = FALSE, results = 'hide'}
 #| label: load-data
 #| include: true
 
 lb2023 <- haven :: read_sav("E:\\Bases de datos\\latinobarometro_datasets\\lb2023.sav")
-lb2023 <- lb2023 %>%  mutate(across(where(is.character), trimws)) %>% rename_with(~ gsub("[._\\s]+", "", tolower(.x)))
+```
 
 
-#exploración de los metadatos
+```{r, message = FALSE, results = 'hide'}
+lb2023 <- lb2023 %>%  mutate(across(where(is.character), trimws)) %>% 
+  rename_with(~ gsub("[._[:space:]]+", "", tolower(.x)))
+
+```
+
+La base de datos global contiene metadatos que describen las variables, como etiquetas y valores. Para explorar estos metadatos, se utiliza la función `look_for` del paquete `labelled`.
+
+```{r, message = FALSE}
+# 1. Exploración de los metadatos
 lb2023_metadata <- look_for(lb2023) %>% as_tibble()
+lb2023_metadata
+```
 
+
+```{r, message = FALSE}
 # 2. Exporta a Excel con writexl
 writexl::write_xlsx(x = lb2023, path = file.path("Exports", "Tables", "lb2023.xlsx"))
 ```
 
+# Preparacion de datos
+
+## Definición de listas de variables
+
+Extraemos las variables de interés en listas que podemos editar posteriormente. En este caso, se extraen las variables dependientes e independientes que se utilizarán en el análisis.
+
+Podemos crear una lista de varibles dependientes clasificandolas segun su rol en nuestros modelos. Por ejemplo,`principal_predictors` son las variables principales que se espera que tengan un efecto significativo en la variable dependiente, mientras que `sociodem_controls` y `other_controls` son variables de control que se incluirán para ajustar el modelo y controlar por posibles confusores.
+
+Con `var_lists` se agrupan todas las variables en una lista para facilitar su manejo y edición posterior, luego con `all_of` se seleccionan las variables de la base de datos previamente almacenadas en `var_lists`.
+
+```{r}
+#| label: extract-data
+#| include: true
+
+# Variable dependiente
+dep_vars <- c("p13std")  # Confianza en el Congreso
+
+# Predictores principales (editables)
+principal_predictors <- c(
+  "p18sta",   # Problemas en la democracia
+  "p18sti",   # La democracia soluciona problemas
+  "p18ne",    # Poder judicial independiente
+  "p54na",    # Tolerancia a la protesta
+  "p11stgbsa",# Satisfacción con la democracia
+  "p11stgbsb" # Satisfacción con la economía
+)
+
+sociodem_controls <- c(
+  "edad",     # Edad 
+  "sexo",
+  "s1",       # Religión
+  "s1a",      # Practica religiosa
+  "s2",       # Clase social subjetiva
+  "s7",       # Raza
+  "s18a"      # Ocupación
+)
+# Otras variabels de control
+other_controls <- c(
+  "p16st",    # Eje izquierda–derecha
+  "p17st",    # Cuán justa es la distribución de ingreso
+  "reg",      # Región
+  ## Variables asociadas al diseño muestral
+  "ciudad",   # Ciudad
+  "tamciud",  # Tamaño de la ciudad
+  "idenpa",   # País
+  "wt"    # Ponderación muestral
+)
+
+# Agrupar todo en una lista para fácil acceso
+var_lists <- list(
+  dep_vars             = dep_vars,
+  principal_predictors = principal_predictors,
+  sociodem_controls    = sociodem_controls,
+  other_controls       = other_controls
+)
+
+# Seleccionar todas las variables relevantes
+lb2023_a <- lb2023 %>% select(
+    all_of(var_lists$dep_vars),
+    all_of(var_lists$principal_predictors),
+    all_of(var_lists$sociodem_controls),
+    all_of(var_lists$other_controls))
+```
 
 
+```{r}
+lb2023_a <- lb2023_a %>%
+  mutate(
+    edad = as.numeric(edad)  # conservar edad como numérica
+  ) %>%
+  mutate(
+    across(
+      .cols = where(haven::is.labelled),
+      .fns  = ~ haven::as_factor(.x, levels = "labels")
+    )
+  )
+levels(lb2023_a$p16st) # Verificar si la variable de ponderación es numérica
+```
 
+
+# Procesamiento de niveles de variables categoricas
+
+Generamos una lista del universo de categorías ordinales que utiliza el latinobarometro en sus encuestas. Nos aseguramos que R reconozca estas variables como factores ordenados.
+
+```{r}
+# Listas de niveles ordinales estándar
+ord_foursteps <- c("Ninguna", "Poca", "Algo", "Mucha")
+cs_subjective_ord <- c("Baja", "Media Baja", "Media", "Media Alta", "Alta")
+justice_ord <- c("Muy injusta", "Injusta", "Justa", "Muy justa")
+ord_satis     <- c("Nada satisfecho", "No muy satisfecho", "Mas bien satisfecho", "Muy satisfecho")
+ord_agree     <- c("Muy en desacuerdo", "En desacuerdo", "De acuerdo", "Muy de acuerdo")
+unknown_cat   <- c("No sabe", "No contesta", "No aplicable", "No preguntada", "No sabe / No contesta")
+```
+
+```{r}
+# Recodificar todas las variables ordinales de manera unificada:
+lb2023_a <- lb2023_a %>%
+  mutate(
+    across(
+      .cols = where(is.factor),
+      .fns = ~ {
+        x_chr <- as.character(.x)
+        # Marcar datos desconocidos como NA
+        x_chr[x_chr %in% unknown_cat] <- NA
+        # Identificar y aplicar niveles
+        if (all(na.omit(x_chr) %in% ord_foursteps)) {
+          factor(x_chr, levels = ord_foursteps, ordered = TRUE)
+        } else if (all(na.omit(x_chr) %in% cs_subjective_ord)) {
+          factor(x_chr, levels = cs_subjective_ord, ordered = TRUE)
+        } else if (all(na.omit(x_chr) %in% justice_ord)) {
+          factor(x_chr, levels = justice_ord, ordered = TRUE)
+        } else if (all(na.omit(x_chr) %in% ord_satis)) {
+          factor(x_chr, levels = ord_satis, ordered = TRUE)
+        } else if (all(na.omit(x_chr) %in% ord_agree)) {
+          factor(x_chr, levels = ord_agree, ordered = TRUE)
+        } else {
+          # Devolver original si no coincide con ninguna escala
+          .x
+        }
+      }
+    )
+  )
+```
+
+Procesamos por separado algunas variables especiales. 
+
+```{r, warning=FALSE, message=FALSE}
+# Recodificación específica de p16st (eje izquierda–derecha) en un bloque aparte
+lb2023_a <- lb2023_a %>%
+  mutate(
+    p16st = case_when(
+      grepl("^00", p16st)                 ~ 0L,
+      grepl("^10", p16st)                 ~ 10L,
+      p16st %in% as.character(1:9)       ~ as.integer(as.character(p16st)),
+      TRUE                                ~ NA_integer_
+    )
+  )
+
+```
+
+
+Finalmente, filtramos las observaciones a Perú
+
+```{r}
+lb2023_pe <- lb2023_a %>% filter(idenpa == " Peru") 
+```
+
+
+# Analisis descriptivo
+
+
+```{r}
+library(skimr)
+skim(lb2023_pe) %>% as_tibble()
+```
 
 
 
