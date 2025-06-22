@@ -3,8 +3,8 @@ title: "Tesis de maestría"
 authot: "Nombre del autor"
 format: 
    html: 
-   toc: true
-   code-fold: show
+      toc: true
+      code-fold: show
 ---
 
 ## Quarto
